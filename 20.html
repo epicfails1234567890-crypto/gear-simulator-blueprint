@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Mecanismos V6 Pro - Clara Torres</title>
+    <style>
+        body { margin: 0; background: #050507; font-family: 'Inter', sans-serif; color: #f4f4f5; overflow: hidden; display: flex; flex-direction: column; height: 100vh; }
+        .toolbar { background: #0f172a; padding: 12px; display: flex; gap: 8px; border-bottom: 2px solid #22d3ee; align-items: center; z-index: 10; flex-wrap: wrap; }
+        .node-dot { width: 8px; height: 8px; background: #f43f5e; border-radius: 50%; box-shadow: 0 0 8px #f43f5e; }
+        button { background: #1e293b; color: white; border: 1px solid #334155; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-weight: 600; font-size: 10px; text-transform: uppercase; transition: 0.2s; }
+        button:hover { background: #22d3ee; color: #0f172a; border-color: #22d3ee; }
+        .group { display: flex; gap: 5px; background: rgba(255,255,255,0.05); padding: 5px; border-radius: 6px; align-items: center; border: 1px solid rgba(255,255,255,0.1); }
+        .label-sm { font-size: 9px; color: #64748b; font-weight: bold; margin: 0 5px; }
+        .btn-undo { border-color: #f59e0b; color: #f59e0b; }
+        .btn-io { border-color: #a855f7; color: #a855f7; }
+        .btn-danger { border-color: #f43f5e; color: #f43f5e; margin-left: auto; }
+        canvas { flex-grow: 1; cursor: grab; }
+        .stats-panel { position: absolute; bottom: 20px; left: 20px; background: rgba(15, 23, 42, 0.9); padding: 15px; border-left: 4px solid #22d3ee; font-family: monospace; pointer-events: none; backdrop-filter: blur(10px); }
+        .cyan { color: #22d3ee; }
+    </style>
+</head>
+<body>
+
+<div class="toolbar">
+    <div class="node-dot"></div>
+    <div class="group">
+        <span class="label-sm">⚙️ PIEZAS</span>
+        <button onclick="addStage('gear', 'red')">⚙️ Reducir</button>
+        <button onclick="addStage('gear', 'inc')">⚙️ Aumentar</button>
+        <button onclick="addStage('pulley', 'red')">⚪ Reducir</button>
+        <button onclick="addStage('pulley', 'inc')">⚪ Aumentar</button>
+    </div>
+    <div class="group">
+        <span class="label-sm">🛠️ EDICIÓN</span>
+        <button class="btn-undo" onclick="undoLast()">⬅️ Quitar Último</button>
+        <button onclick="camera.x=0; camera.y=0; camera.zoom=0.8;">Centrar</button>
+    </div>
+    <div class="group">
+        <span class="label-sm">📂 ARCHIVO</span>
+        <button class="btn-io" onclick="saveToJSON()">Guardar</button>
+        <button class="btn-io" onclick="document.getElementById('fileInput').click()">Cargar</button>
+        <input type="file" id="fileInput" style="display:none" accept=".json" onclick="this.value=null" onchange="loadFromJSON(event)">
+    </div>
+    <button class="btn-danger" onclick="reset()">Reset</button>
+</div>
+
+<div class="stats-panel">
+    <div>RATIO TOTAL: <span class="cyan" id="total-ratio">1.0000</span></div>
+    <div>VEL. SALIDA: <span class="cyan" id="speed-out">100.0%</span></div>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const MODULO = 8;
+let elements = [];
+let angle = 0;
+let camera = { x: 0, y: 0, zoom: 0.7 };
+let isDragging = false;
+let lastMouse = { x: 0, y: 0 };
+
+function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+window.onresize = resize; resize();
+
+class Mechanism {
+    constructor(type, sizeVal, x, y, prevIdx, isSolidary, isFront) {
+        this.type = type; 
+        this.sizeVal = sizeVal; 
+        this.r = (type === 'gear') ? (sizeVal * MODULO) / 2 : sizeVal;
+        this.x = x; this.y = y;
+        this.prevIdx = prevIdx; 
+        this.isSolidary = isSolidary;
+        this.isFront = isFront;
+        this.ratio = 1; this.dir = 1;
+    }
+
+    updateMath() {
+        if (this.prevIdx === null || this.prevIdx === undefined || !elements[this.prevIdx]) {
+            this.ratio = 1; this.dir = 1;
+        } else {
+            const prev = elements[this.prevIdx];
+            if (this.isSolidary) {
+                this.ratio = prev.ratio; this.dir = prev.dir;
+            } else {
+                const ratioMult = (prev.type === 'gear') ? (prev.sizeVal / this.sizeVal) : (prev.r / this.r);
+                this.ratio = prev.ratio * ratioMult;
+                this.dir = (this.type === 'gear') ? prev.dir * -1 : prev.dir;
+            }
+        }
+    }
+
+    draw(a) {
+        const curAngle = a * this.ratio * this.dir;
+        ctx.save();
+        ctx.translate(this.x, this.y);
+
+        if (this.type === 'pulley' && !this.isSolidary && this.prevIdx !== null && elements[this.prevIdx]) {
+            this.drawBelt();
+        }
+
+        ctx.rotate(curAngle + ((this.type === 'gear' && !this.isSolidary && this.dir === -1) ? Math.PI / this.sizeVal : 0));
+        ctx.strokeStyle = this.isFront ? "#22d3ee" : "rgba(148, 163, 184, 0.4)";
+        ctx.fillStyle = this.isFront ? "rgba(34, 211, 238, 0.15)" : "rgba(148, 163, 184, 0.05)";
+        ctx.lineWidth = 2;
+
+        if (this.type === 'gear') {
+            this.drawGearShape();
+        } else {
+            this.drawPulleyShape();
+        }
+        ctx.restore();
+    }
+
+    drawGearShape() {
+        const outer = this.r + 5; const inner = this.r - 5;
+        ctx.beginPath();
+        for (let i = 0; i < this.sizeVal; i++) {
+            let ang = (Math.PI * 2 / this.sizeVal) * i;
+            ctx.lineTo(Math.cos(ang-0.1)*inner, Math.sin(ang-0.1)*inner);
+            ctx.lineTo(Math.cos(ang-0.05)*outer, Math.sin(ang-0.05)*outer);
+            ctx.lineTo(Math.cos(ang+0.05)*outer, Math.sin(ang+0.05)*outer);
+            ctx.lineTo(Math.cos(ang+0.1)*inner, Math.sin(ang+0.1)*inner);
+        }
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+
+    drawPulleyShape() {
+        // Círculo exterior e interior
+        ctx.beginPath(); ctx.arc(0, 0, this.r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.beginPath(); ctx.arc(0, 0, this.r * 0.3, 0, Math.PI * 2); ctx.stroke();
+        // Aspas (Cruceta)
+        for(let i=0; i<2; i++) {
+            ctx.beginPath();
+            let ang = (i * Math.PI / 2);
+            ctx.moveTo(Math.cos(ang)*this.r, Math.sin(ang)*this.r);
+            ctx.lineTo(Math.cos(ang+Math.PI)*this.r, Math.sin(ang+Math.PI)*this.r);
+            ctx.stroke();
+        }
+    }
+
+    drawBelt() {
+        const prev = elements[this.prevIdx];
+        ctx.save(); ctx.setTransform(1,0,0,1,0,0);
+        ctx.translate(canvas.width/2 + camera.x*camera.zoom, canvas.height/2 + camera.y*camera.zoom);
+        ctx.scale(camera.zoom, camera.zoom);
+        const angle = Math.atan2(this.y - prev.y, this.x - prev.x);
+        const p = Math.PI/2;
+        ctx.strokeStyle = "rgba(148, 163, 184, 0.5)"; ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(prev.x + Math.cos(angle-p)*prev.r, prev.y + Math.sin(angle-p)*prev.r);
+        ctx.lineTo(this.x + Math.cos(angle-p)*this.r, this.y + Math.sin(angle-p)*this.r);
+        ctx.moveTo(prev.x + Math.cos(angle+p)*prev.r, prev.y + Math.sin(angle+p)*prev.r);
+        ctx.lineTo(this.x + Math.cos(angle+p)*this.r, this.y + Math.sin(angle+p)*this.r);
+        ctx.stroke(); ctx.restore();
+    }
+}
+
+function undoLast() {
+    if (elements.length <= 2) elements = [];
+    else elements.splice(-2, 2);
+    elements.forEach(el => el.updateMath());
+    updateUI();
+}
+
+function saveToJSON() {
+    if (elements.length === 0) return;
+    const blob = new Blob([JSON.stringify(elements)], {type: "application/json"});
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = "mecanismo_completo.json"; a.click();
+}
+
+function loadFromJSON(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        try {
+            const data = JSON.parse(e.target.result);
+            elements = data.map(d => new Mechanism(d.type, d.sizeVal, d.x, d.y, d.prevIdx, d.isSolidary, d.isFront));
+            elements.forEach(el => el.updateMath());
+            updateUI();
+        } catch(err) { alert("Error al cargar"); }
+    };
+    reader.readAsText(file);
+}
+
+function addStage(tech, mode) {
+    const lastIdx = elements.length > 0 ? elements.length - 1 : null;
+    let valIn = (tech === 'gear') ? 12 : 40;
+    let valOut = (tech === 'gear') ? 36 : 100;
+    if (mode === 'inc') [valIn, valOut] = [valOut, valIn];
+
+    if (lastIdx === null) {
+        const m = new Mechanism(tech, (tech==='gear'?24:80), -200, 0, null, false, false);
+        elements.push(m);
+        const dist = tech==='gear' ? (m.r + (valOut*MODULO/2)) : 220;
+        elements.push(new Mechanism(tech, valOut, m.x + dist, 0, 0, false, (valOut < (tech==='gear'?24:80))));
+    } else {
+        const eSolid = new Mechanism(tech, valIn, elements[lastIdx].x, 0, lastIdx, true, (valIn <= (tech==='gear'?12:40)));
+        elements.push(eSolid);
+        const dist = tech==='gear' ? (eSolid.r + (valOut*MODULO/2)) : 220;
+        elements.push(new Mechanism(tech, valOut, eSolid.x + dist, 0, elements.length-1, false, (valOut <= (tech==='gear'?12:40))));
+    }
+    elements.forEach(el => el.updateMath());
+    updateUI();
+}
+
+canvas.onmousedown = (e) => { isDragging = true; lastMouse = { x: e.clientX, y: e.clientY }; };
+window.onmouseup = () => isDragging = false;
+window.onmousemove = (e) => {
+    if (!isDragging) return;
+    camera.x += (e.clientX - lastMouse.x) / camera.zoom;
+    camera.y += (e.clientY - lastMouse.y) / camera.zoom;
+    lastMouse = { x: e.clientX, y: e.clientY };
+};
+canvas.onwheel = (e) => { camera.zoom *= (e.deltaY > 0 ? 0.9 : 1.1); camera.zoom = Math.min(Math.max(camera.zoom, 0.1), 5); };
+
+function updateUI() {
+    if(elements.length === 0) {
+        document.getElementById('total-ratio').innerText = "1.0000";
+        document.getElementById('speed-out').innerText = "100.00%";
+        return;
+    }
+    const last = elements[elements.length - 1];
+    document.getElementById('total-ratio').innerText = last.ratio.toFixed(4);
+    document.getElementById('speed-out').innerText = (last.ratio * 100).toFixed(2) + "%";
+}
+
+function reset() { elements = []; angle = 0; updateUI(); }
+
+function loop() {
+    ctx.clearRect(0,0,canvas.width, canvas.height);
+    angle += 0.02;
+    ctx.save();
+    ctx.translate(canvas.width/2 + camera.x*camera.zoom, canvas.height/2 + camera.y*camera.zoom);
+    ctx.scale(camera.zoom, camera.zoom);
+    elements.filter(e => !e.isFront).forEach(e => e.draw(angle));
+    elements.filter(e => e.isFront).forEach(e => e.draw(angle));
+    ctx.restore();
+    requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
